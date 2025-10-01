@@ -1,15 +1,17 @@
 import LiveClass from '../models/LiveClass.model.js';
+import User from '../models/User.model.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { logger } from '../utils/logger.js';
 import { v4 as uuidv4 } from 'uuid';
 
 export const createLiveClass = async (req, res) => {
   try {
-    const { title, instructor, subject, scheduledTime, duration } = req.body;
+    const { title, subject, scheduledTime, duration } = req.body;
 
     const liveClass = new LiveClass({
       title,
-      instructor,
+      instructor: req.user.id,
+      instructorName: req.user.name,
       subject,
       scheduledTime: new Date(scheduledTime),
       duration: parseInt(duration),
@@ -18,7 +20,7 @@ export const createLiveClass = async (req, res) => {
 
     await liveClass.save();
 
-    logger.info(`Live class created: ${liveClass._id}`);
+    logger.info(`Live class created: ${liveClass._id} by ${req.user.name}`);
     return successResponse(res, 201, 'Live class created successfully', liveClass);
   } catch (error) {
     logger.error('Error creating live class:', error);
@@ -28,7 +30,7 @@ export const createLiveClass = async (req, res) => {
 
 export const getAllLiveClasses = async (req, res) => {
   try {
-    const { status, upcoming } = req.query;
+    const { status, upcoming, myClasses } = req.query;
     
     let query = {};
     
@@ -41,9 +43,15 @@ export const getAllLiveClasses = async (req, res) => {
       query.status = { $in: ['scheduled', 'live'] };
     }
 
+    // If student, show all. If instructor, optionally filter by their classes
+    if (myClasses === 'true' && req.user.role === 'instructor') {
+      query.instructor = req.user.id;
+    }
+
     const liveClasses = await LiveClass.find(query)
+      .populate('instructor', 'name email subject')
       .sort({ scheduledTime: 1 })
-      .limit(20);
+      .limit(50);
 
     return successResponse(res, 200, 'Live classes fetched successfully', liveClasses);
   } catch (error) {
@@ -56,7 +64,8 @@ export const getLiveClassById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const liveClass = await LiveClass.findById(id);
+    const liveClass = await LiveClass.findById(id)
+      .populate('instructor', 'name email subject');
 
     if (!liveClass) {
       return errorResponse(res, 404, 'Live class not found');
@@ -73,17 +82,22 @@ export const startLiveClass = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const liveClass = await LiveClass.findByIdAndUpdate(
-      id,
-      { status: 'live' },
-      { new: true }
-    );
+    const liveClass = await LiveClass.findById(id);
 
     if (!liveClass) {
       return errorResponse(res, 404, 'Live class not found');
     }
 
-    logger.info(`Live class started: ${liveClass._id}`);
+    // Check if user is the instructor
+    if (liveClass.instructor.toString() !== req.user.id.toString()) {
+      return errorResponse(res, 403, 'Only the instructor can start the class');
+    }
+
+    liveClass.status = 'live';
+    liveClass.actualStartTime = new Date();
+    await liveClass.save();
+
+    logger.info(`Live class started: ${liveClass._id} by ${req.user.name}`);
     return successResponse(res, 200, 'Live class started successfully', liveClass);
   } catch (error) {
     logger.error('Error starting live class:', error);
@@ -94,21 +108,58 @@ export const startLiveClass = async (req, res) => {
 export const endLiveClass = async (req, res) => {
   try {
     const { id } = req.params;
+    const { recordingUrl } = req.body;
 
-    const liveClass = await LiveClass.findByIdAndUpdate(
-      id,
-      { status: 'ended' },
-      { new: true }
-    );
+    const liveClass = await LiveClass.findById(id);
 
     if (!liveClass) {
       return errorResponse(res, 404, 'Live class not found');
     }
 
-    logger.info(`Live class ended: ${liveClass._id}`);
+    // Check if user is the instructor
+    if (liveClass.instructor.toString() !== req.user.id.toString()) {
+      return errorResponse(res, 403, 'Only the instructor can end the class');
+    }
+
+    liveClass.status = 'ended';
+    liveClass.actualEndTime = new Date();
+    if (recordingUrl) {
+      liveClass.recordingUrl = recordingUrl;
+    }
+    await liveClass.save();
+
+    logger.info(`Live class ended: ${liveClass._id} by ${req.user.name}`);
     return successResponse(res, 200, 'Live class ended successfully', liveClass);
   } catch (error) {
     logger.error('Error ending live class:', error);
     return errorResponse(res, 500, 'Failed to end live class');
+  }
+};
+
+export const getLiveNotifications = async (req, res) => {
+  try {
+    // Get live classes that are currently live or starting in next 15 minutes
+    const now = new Date();
+    const fifteenMinutesLater = new Date(now.getTime() + 15 * 60000);
+
+    const notifications = await LiveClass.find({
+      $or: [
+        { status: 'live' },
+        {
+          status: 'scheduled',
+          scheduledTime: {
+            $gte: now,
+            $lte: fifteenMinutesLater
+          }
+        }
+      ]
+    })
+    .populate('instructor', 'name')
+    .sort({ scheduledTime: 1 });
+
+    return successResponse(res, 200, 'Notifications fetched successfully', notifications);
+  } catch (error) {
+    logger.error('Error fetching notifications:', error);
+    return errorResponse(res, 500, 'Failed to fetch notifications');
   }
 };

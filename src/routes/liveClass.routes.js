@@ -4,15 +4,18 @@ import {
   getAllLiveClasses,
   getLiveClassById,
   startLiveClass,
-  endLiveClass
+  endLiveClass,
+  getLiveNotifications
 } from '../controllers/liveClass.controller.js';
+import { protect, restrictTo } from '../middlewares/auth.middleware.js';
 
 const router = express.Router();
 
-router.post('/', createLiveClass);
-router.get('/', getAllLiveClasses);
-router.get('/:id', getLiveClassById);
-router.post('/:id/start', startLiveClass);
-router.post('/:id/end', endLiveClass);
+router.post('/', protect, restrictTo('instructor'), createLiveClass);
+router.get('/', protect, getAllLiveClasses);
+router.get('/notifications', protect, getLiveNotifications);
+router.get('/:id', protect, getLiveClassById);
+router.post('/:id/start', protect, restrictTo('instructor'), startLiveClass);
+router.post('/:id/end', protect, restrictTo('instructor'), endLiveClass);
 
 export default router;
